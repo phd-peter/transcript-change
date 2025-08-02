@@ -13,9 +13,10 @@ interface MaskingCanvasProps {
   filename: string
   imageInfo: { width: number; height: number }
   onMaskRegionsChange: (regions: MaskRegion[]) => void
+  initialMaskRegions?: MaskRegion[]
 }
 
-export default function MaskingCanvas({ filename, imageInfo, onMaskRegionsChange }: MaskingCanvasProps) {
+export default function MaskingCanvas({ filename, imageInfo, onMaskRegionsChange, initialMaskRegions = [] }: MaskingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const imageRef = useRef<HTMLImageElement>(null)
   const [maskRegions, setMaskRegions] = useState<MaskRegion[]>([])
@@ -28,6 +29,11 @@ export default function MaskingCanvas({ filename, imageInfo, onMaskRegionsChange
   const maxCanvasHeight = 600
 
   useEffect(() => {
+    // 새로운 이미지로 전환될 때 해당 이미지의 기존 마스킹 데이터로 초기화
+    setMaskRegions(initialMaskRegions)
+    setCurrentPoints([])
+    setIsImageLoaded(false)
+    
     // 이미지 로드
     const img = new Image()
     img.onload = () => {
@@ -42,7 +48,7 @@ export default function MaskingCanvas({ filename, imageInfo, onMaskRegionsChange
     }
     img.src = `http://localhost:8000/uploads/${filename}`
     imageRef.current = img
-  }, [filename, imageInfo])
+  }, [filename, imageInfo, initialMaskRegions])
 
   useEffect(() => {
     if (isImageLoaded) {

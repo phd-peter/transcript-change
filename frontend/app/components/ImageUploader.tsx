@@ -2,41 +2,75 @@
 
 import { useState } from 'react'
 
-interface ImageUploaderProps {
-  onFileUploaded: (filename: string, info: { width: number; height: number }) => void
+interface UploadedFileInfo {
+  filename: string
+  original_name: string
+  width: number
+  height: number
 }
 
-export default function ImageUploader({ onFileUploaded }: ImageUploaderProps) {
+interface ImageUploaderProps {
+  onFileUploaded?: (filename: string, info: { width: number; height: number }) => void
+  onMultipleFilesUploaded?: (files: UploadedFileInfo[]) => void
+  multiple?: boolean
+}
+
+export default function ImageUploader({ onFileUploaded, onMultipleFilesUploaded, multiple = false }: ImageUploaderProps) {
   const [isUploading, setIsUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
 
-  const handleFileUpload = async (file: File) => {
-    if (!file.type.startsWith('image/')) {
+  const handleFileUpload = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files)
+    const imageFiles = fileArray.filter(file => file.type.startsWith('image/'))
+    
+    if (imageFiles.length === 0) {
       alert('이미지 파일만 업로드 가능합니다.')
       return
     }
 
     setIsUploading(true)
     try {
-      const formData = new FormData()
-      formData.append('file', file)
+      if (multiple && imageFiles.length > 1) {
+        // 다중 파일 업로드
+        const formData = new FormData()
+        imageFiles.forEach(file => {
+          formData.append('files', file)
+        })
 
-      const response = await fetch('http://localhost:8000/upload', {
-        method: 'POST',
-        body: formData,
-      })
+        const response = await fetch('http://localhost:8000/upload-multiple', {
+          method: 'POST',
+          body: formData,
+        })
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+
+        const result = await response.json()
+        onMultipleFilesUploaded?.(result.uploaded_files)
+      } else {
+        // 단일 파일 업로드 (기존 방식)
+        const file = imageFiles[0]
+        const formData = new FormData()
+        formData.append('file', file)
+
+        const response = await fetch('http://localhost:8000/upload', {
+          method: 'POST',
+          body: formData,
+        })
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+
+        const result = await response.json()
+        
+        // 파일 정보 가져오기
+        const infoResponse = await fetch(`http://localhost:8000/files/${result.filename}`)
+        const info = await infoResponse.json()
+        
+        onFileUploaded?.(result.filename, { width: info.width, height: info.height })
       }
-
-      const result = await response.json()
-      
-      // 파일 정보 가져오기
-      const infoResponse = await fetch(`http://localhost:8000/files/${result.filename}`)
-      const info = await infoResponse.json()
-      
-      onFileUploaded(result.filename, { width: info.width, height: info.height })
     } catch (error) {
       console.error('업로드 오류:', error)
       alert('파일 업로드 중 오류가 발생했습니다.')
@@ -49,16 +83,16 @@ export default function ImageUploader({ onFileUploaded }: ImageUploaderProps) {
     e.preventDefault()
     setDragOver(false)
     
-    const file = e.dataTransfer.files[0]
-    if (file) {
-      handleFileUpload(file)
+    const files = e.dataTransfer.files
+    if (files.length > 0) {
+      handleFileUpload(files)
     }
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) {
-      handleFileUpload(file)
+    const files = e.target.files
+    if (files && files.length > 0) {
+      handleFileUpload(files)
     }
   }
 
@@ -99,14 +133,15 @@ export default function ImageUploader({ onFileUploaded }: ImageUploaderProps) {
             </svg>
           </div>
           <p className="text-lg font-medium text-gray-900 mb-2">
-            이미지 파일을 드래그하거나 클릭하여 업로드
+            {multiple ? '다중 이미지 파일을 드래그하거나 클릭하여 업로드' : '이미지 파일을 드래그하거나 클릭하여 업로드'}
           </p>
           <p className="text-sm text-gray-500 mb-4">
-            PNG, JPG, JPEG 파일을 지원합니다
+            PNG, JPG, JPEG 파일을 지원합니다 {multiple && '(여러 파일 선택 가능)'}
           </p>
           <input
             type="file"
             accept="image/*"
+            multiple={multiple}
             onChange={handleFileSelect}
             className="hidden"
             id="file-upload"

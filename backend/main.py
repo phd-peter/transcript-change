@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 import cv2
 import numpy as np
 import os
@@ -13,6 +13,8 @@ import re
 from datetime import datetime
 import shutil
 from dotenv import load_dotenv
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # .env 파일 로드
 load_dotenv()
@@ -22,7 +24,7 @@ app = FastAPI(title="Transcript Change API", version="1.0.0")
 # CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js 개발 서버
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],  # Next.js 개발 서버 (포트 3000, 3001 모두 허용)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,6 +49,13 @@ class MaskRegion(BaseModel):
 class ProcessImageRequest(BaseModel):
     filename: str
     mask_regions: List[MaskRegion]
+
+class ImageMaskData(BaseModel):
+    filename: str
+    mask_regions: List[MaskRegion]
+
+class ProcessMultipleImagesRequest(BaseModel):
+    images: List[ImageMaskData]
 
 def extract_table_data_gemini(api_key: str, image_path: str):
     """표 형식 이미지에서 데이터를 추출하는 함수"""
@@ -145,6 +154,42 @@ async def upload_image(file: UploadFile = File(...)):
         "file_path": file_path
     }
 
+@app.post("/upload-multiple")
+async def upload_multiple_images(files: List[UploadFile] = File(...)):
+    """다중 이미지 파일 업로드"""
+    uploaded_files = []
+    
+    for file in files:
+        if not file.content_type.startswith('image/'):
+            continue  # 이미지가 아닌 파일은 건너뛰기
+        
+        # 고유 파일명 생성
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 마이크로초까지 포함
+        filename = f"{timestamp}_{file.filename}"
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        
+        # 파일 저장
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # 이미지 크기 정보 가져오기
+        img = cv2.imread(file_path)
+        height, width = img.shape[:2]
+        
+        uploaded_files.append({
+            "filename": filename,
+            "original_name": file.filename,
+            "width": width,
+            "height": height,
+            "file_path": file_path
+        })
+    
+    return {
+        "uploaded_files": uploaded_files,
+        "total_count": len(uploaded_files),
+        "message": f"{len(uploaded_files)}개 파일 업로드 완료"
+    }
+
 @app.post("/process")
 async def process_image(request: ProcessImageRequest):
     """이미지 마스킹 및 데이터 추출"""
@@ -203,6 +248,114 @@ async def process_image(request: ProcessImageRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"처리 중 오류 발생: {str(e)}")
+
+def process_single_image_for_batch(api_key: str, image_data: ImageMaskData) -> Dict[str, Any]:
+    """배치 처리를 위한 단일 이미지 처리 함수"""
+    try:
+        # 원본 이미지 경로
+        original_path = os.path.join(UPLOAD_DIR, image_data.filename)
+        if not os.path.exists(original_path):
+            raise ValueError(f"파일을 찾을 수 없습니다: {image_data.filename}")
+        
+        # 마스킹된 이미지 경로
+        masked_filename = f"masked_{image_data.filename}"
+        masked_path = os.path.join(PROCESSED_DIR, masked_filename)
+        
+        # 마스킹 적용
+        apply_masking(original_path, image_data.mask_regions, masked_path)
+        
+        # Gemini API로 데이터 추출
+        extracted_data = extract_table_data_gemini(api_key, masked_path)
+        
+        return {
+            "success": True,
+            "filename": image_data.filename,
+            "masked_filename": masked_filename,
+            "extracted_data": extracted_data,
+            "mask_regions_count": len(image_data.mask_regions),
+            "error": None
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "filename": image_data.filename,
+            "masked_filename": None,
+            "extracted_data": None,
+            "mask_regions_count": len(image_data.mask_regions) if image_data.mask_regions else 0,
+            "error": str(e)
+        }
+
+@app.post("/process-multiple")
+async def process_multiple_images(request: ProcessMultipleImagesRequest):
+    """다중 이미지 마스킹 및 데이터 추출 (병렬처리)"""
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY가 설정되지 않았습니다.")
+    
+    if not request.images:
+        raise HTTPException(status_code=400, detail="처리할 이미지가 없습니다.")
+    
+    try:
+        # 병렬처리를 위한 executor 설정
+        max_workers = min(4, len(request.images))  # 최대 4개 동시 처리
+        
+        # 병렬처리 실행
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 모든 이미지 처리 작업 submit
+            future_to_image = {
+                executor.submit(process_single_image_for_batch, api_key, image_data): image_data
+                for image_data in request.images
+            }
+            
+            # 결과 수집
+            results = []
+            for future in future_to_image:
+                result = future.result()
+                results.append(result)
+        
+        # 성공한 결과들만 모아서 CSV 데이터 생성
+        successful_results = [r for r in results if r["success"]]
+        failed_results = [r for r in results if not r["success"]]
+        
+        all_csv_data = []
+        headers = ['파일명', '반출내용', '구매방법', '구매품명', '길이', '개수']
+        
+        for result in successful_results:
+            extracted_data = result["extracted_data"]
+            filename = result["filename"]
+            
+            for row in extracted_data.get('rows', []):
+                if len(row) < 3:
+                    continue
+                    
+                반출내용 = row[0] if len(row) > 0 else ''
+                구매방법 = row[1] if len(row) > 1 else ''
+                구매품명 = row[2] if len(row) > 2 else ''
+                
+                # 길이-개수 쌍들 처리
+                if len(row) >= 5:  # 최소 길이1, 개수1이 있는 경우
+                    for i in range(3, len(row) - 1, 2):  # 3번째부터 2씩 증가
+                        if i + 1 < len(row) and row[i] is not None and row[i+1] is not None:
+                            길이 = row[i]
+                            개수 = row[i + 1]
+                            all_csv_data.append([filename, 반출내용, 구매방법, 구매품명, 길이, 개수])
+                else:
+                    # 길이-개수 정보가 없는 경우 기본 정보만
+                    all_csv_data.append([filename, 반출내용, 구매방법, 구매품명, '', ''])
+        
+        return {
+            "success": True,
+            "total_images": len(request.images),
+            "successful_images": len(successful_results),
+            "failed_images": len(failed_results),
+            "headers": headers,
+            "csv_data": all_csv_data,
+            "results": results,
+            "failed_files": [r["filename"] for r in failed_results] if failed_results else []
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"일괄 처리 중 오류 발생: {str(e)}")
 
 @app.get("/files/{filename}")
 async def get_file_info(filename: str):

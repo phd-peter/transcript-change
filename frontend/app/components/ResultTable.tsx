@@ -3,10 +3,17 @@
 interface ProcessedData {
   headers: string[]
   csv_data: any[][]
-  raw_data: any
-  filename: string
-  masked_filename: string
-  mask_regions_count: number
+  raw_data?: any
+  filename?: string
+  masked_filename?: string
+  mask_regions_count?: number
+  // 다중 이미지 처리 결과 타입
+  success?: boolean
+  total_images?: number
+  successful_images?: number
+  failed_images?: number
+  results?: any[]
+  failed_files?: string[]
 }
 
 interface ResultTableProps {
@@ -48,9 +55,19 @@ export default function ResultTable({ data }: ResultTableProps) {
       <div className="bg-green-50 border border-green-200 rounded-lg p-4">
         <h3 className="text-lg font-medium text-green-800 mb-2">처리 완료!</h3>
         <div className="text-sm text-green-700 space-y-1">
-          <p><strong>원본 파일:</strong> {data.filename}</p>
-          <p><strong>마스킹된 파일:</strong> {data.masked_filename}</p>
-          <p><strong>마스킹 영역 수:</strong> {data.mask_regions_count}개</p>
+          {data.filename ? (
+            <>
+              <p><strong>원본 파일:</strong> {data.filename}</p>
+              <p><strong>마스킹된 파일:</strong> {data.masked_filename}</p>
+              <p><strong>마스킹 영역 수:</strong> {data.mask_regions_count}개</p>
+            </>
+          ) : (
+            <>
+              <p><strong>총 이미지:</strong> {data.total_images}개</p>
+              <p><strong>성공한 이미지:</strong> {data.successful_images}개</p>
+              <p><strong>실패한 이미지:</strong> {data.failed_images}개</p>
+            </>
+          )}
           <p><strong>추출된 데이터 행 수:</strong> {data.csv_data.length}개</p>
         </div>
       </div>
@@ -110,16 +127,47 @@ export default function ResultTable({ data }: ResultTableProps) {
       </div>
 
       {/* 원시 데이터 (개발자용) */}
-      <details className="bg-gray-50 rounded-lg p-4">
-        <summary className="cursor-pointer font-medium text-gray-700 hover:text-gray-900">
-          원시 데이터 보기 (개발자용)
-        </summary>
-        <div className="mt-4">
-          <pre className="bg-gray-800 text-green-400 p-4 rounded text-xs overflow-x-auto">
-            {JSON.stringify(data.raw_data, null, 2)}
-          </pre>
-        </div>
-      </details>
+      {data.raw_data && (
+        <details className="bg-gray-50 rounded-lg p-4">
+          <summary className="cursor-pointer font-medium text-gray-700 hover:text-gray-900">
+            원시 데이터 보기 (개발자용)
+          </summary>
+          <div className="mt-4">
+            <pre className="bg-gray-800 text-green-400 p-4 rounded text-xs overflow-x-auto">
+              {JSON.stringify(data.raw_data, null, 2)}
+            </pre>
+          </div>
+        </details>
+      )}
+      
+      {/* 다중 이미지 처리 결과 상세 정보 */}
+      {data.results && (
+        <details className="bg-gray-50 rounded-lg p-4">
+          <summary className="cursor-pointer font-medium text-gray-700 hover:text-gray-900">
+            파일별 처리 결과 보기
+          </summary>
+          <div className="mt-4 space-y-2">
+            {data.results.map((result: any, index: number) => (
+              <div key={index} className={`p-3 rounded ${result.success ? 'bg-green-100' : 'bg-red-100'}`}>
+                <div className="flex justify-between items-center">
+                  <span className="font-medium">{result.filename}</span>
+                  <span className={`text-sm ${result.success ? 'text-green-600' : 'text-red-600'}`}>
+                    {result.success ? '성공' : '실패'}
+                  </span>
+                </div>
+                {result.error && (
+                  <p className="text-sm text-red-600 mt-1">{result.error}</p>
+                )}
+                {result.success && (
+                  <p className="text-sm text-gray-600 mt-1">
+                    마스킹 영역: {result.mask_regions_count}개
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   )
 }
