@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Cookies from 'js-cookie'
 
 interface UploadedFileInfo {
   filename: string
@@ -29,6 +30,7 @@ export default function ImageUploader({ onFileUploaded, onMultipleFilesUploaded,
     }
 
     setIsUploading(true)
+    const token = Cookies.get('auth_token')
     try {
       if (multiple && imageFiles.length > 1) {
         // 다중 파일 업로드
@@ -37,8 +39,14 @@ export default function ImageUploader({ onFileUploaded, onMultipleFilesUploaded,
           formData.append('files', file)
         })
 
+        const headers: HeadersInit = {}
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+
         const response = await fetch('http://localhost:8000/upload-multiple', {
           method: 'POST',
+          headers,
           body: formData,
         })
 
@@ -54,8 +62,14 @@ export default function ImageUploader({ onFileUploaded, onMultipleFilesUploaded,
         const formData = new FormData()
         formData.append('file', file)
 
+        const headers: HeadersInit = {}
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+
         const response = await fetch('http://localhost:8000/upload', {
           method: 'POST',
+          headers,
           body: formData,
         })
 
@@ -66,7 +80,14 @@ export default function ImageUploader({ onFileUploaded, onMultipleFilesUploaded,
         const result = await response.json()
         
         // 파일 정보 가져오기
-        const infoResponse = await fetch(`http://localhost:8000/files/${result.filename}`)
+        const infoHeaders: HeadersInit = {}
+        if (token) {
+          infoHeaders['Authorization'] = `Bearer ${token}`
+        }
+        
+        const infoResponse = await fetch(`http://localhost:8000/files/${result.filename}`, {
+          headers: infoHeaders
+        })
         const info = await infoResponse.json()
         
         onFileUploaded?.(result.filename, { width: info.width, height: info.height })

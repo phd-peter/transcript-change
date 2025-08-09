@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/antinomyhq/forge/refs/heads/main/forge.schema.json
+variables:
+  operating_agent: forge
+model: anthropic/claude-sonnet-4
+
+custom_rules: |
+  - Add error handling to all functions
+  - Include unit tests for new code
+  - Use meaningful variable names
+  - Add comments for complex logic
+  - if after server running showing no error, procee the next step shortly

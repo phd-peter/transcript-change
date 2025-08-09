@@ -1,10 +1,14 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import Cookies from 'js-cookie'
 import ImageUploader from './components/ImageUploader'
 import MaskingCanvas from './components/MaskingCanvas'
 import ResultTable from './components/ResultTable'
 import MultiImageManager from './components/MultiImageManager'
+import AuthComponent from './components/AuthComponent'
+import UserDashboard from './components/UserDashboard'
+import { useAuth } from './context/AuthContext'
 
 interface MaskRegion {
   x1: number
@@ -43,8 +47,11 @@ interface BatchProcessedData {
 }
 
 export default function Home() {
+  const { user, loading: authLoading } = useAuth()
+  
   // 모드 선택
-  const [mode, setMode] = useState<'single' | 'multiple'>('single')
+  const [mode, setMode] = useState<'single' | 'multiple' | 'dashboard'>('single')
+  const [showAuth, setShowAuth] = useState(false)
   
   // 단일 이미지 모드 상태
   const [uploadedFile, setUploadedFile] = useState<string | null>(null)
@@ -82,14 +89,22 @@ export default function Home() {
 
     setIsProcessing(true)
     try {
+      const headers: any = {
+        'Content-Type': 'application/json'
+      }
+      
+      // 로그인한 사용자만 토큰 추가
+      if (user) {
+        headers['Authorization'] = `Bearer ${Cookies.get('auth_token') || ''}`
+      }
+
       const response = await fetch('http://localhost:8000/process', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           filename: uploadedFile,
           mask_regions: maskRegions,
+          session_name: user ? `Single Processing ${new Date().toLocaleString()}` : undefined
         }),
       })
 
@@ -108,15 +123,23 @@ export default function Home() {
   }
 
   const handleBatchProcess = async (imagesMaskData: ImageMaskData[]) => {
+    if (!user) {
+      alert('로그인이 필요합니다.')
+      setShowAuth(true)
+      return
+    }
+
     setIsBatchProcessing(true)
     try {
       const response = await fetch('http://localhost:8000/process-multiple', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${Cookies.get('auth_token') || ''}`
         },
         body: JSON.stringify({
           images: imagesMaskData,
+          session_name: `Batch Processing ${new Date().toLocaleString()}`
         }),
       })
 
@@ -143,9 +166,36 @@ export default function Home() {
     setBatchProcessedData(null)
   }
 
-  const switchMode = (newMode: 'single' | 'multiple') => {
+  const switchMode = (newMode: 'single' | 'multiple' | 'dashboard') => {
+    // 다중 이미지 모드나 대시보드 선택 시 로그인 확인
+    if ((newMode === 'multiple' || newMode === 'dashboard') && !user) {
+      setShowAuth(true)
+      return
+    }
+    
     resetAll()
     setMode(newMode)
+  }
+
+  // 로딩 중일 때
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-2 text-gray-600">로딩 중...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // 인증 모달
+  if (showAuth && !user) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <AuthComponent onClose={() => setShowAuth(false)} />
+      </div>
+    )
   }
 
   return (
@@ -158,6 +208,24 @@ export default function Home() {
           <p className="text-gray-600">
             이미지를 업로드하고 마스킹 처리하여 표 데이터를 추출하세요
           </p>
+          
+          {/* 사용자 정보 및 로그인 버튼 */}
+          <div className="mt-4 flex justify-center items-center gap-4">
+            {user ? (
+              <div className="flex items-center gap-4">
+                <span className="text-gray-700">
+                  👋 안녕하세요, {user.display_name || user.email}님!
+                </span>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowAuth(true)}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
+              >
+                로그인 / 회원가입
+              </button>
+            )}
+          </div>
           
           {/* 모드 선택 */}
           <div className="mt-6 flex justify-center">
@@ -182,13 +250,27 @@ export default function Home() {
               >
                 다중 이미지 모드
               </button>
+              {user && (
+                <button
+                  onClick={() => switchMode('dashboard')}
+                  className={`px-4 py-2 rounded-md font-medium ${
+                    mode === 'dashboard'
+                      ? 'bg-white text-blue-600 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  내 데이터
+                </button>
+              )}
             </div>
           </div>
         </div>
 
         {/* 단계별 UI */}
         <div className="space-y-8">
-          {mode === 'single' ? (
+          {mode === 'dashboard' ? (
+            <UserDashboard />
+          ) : mode === 'single' ? (
             <>
               {/* 단일 이미지 모드 */}
               {/* 1단계: 파일 업로드 */}
@@ -236,6 +318,23 @@ export default function Home() {
               {uploadedFile && maskRegions.length > 0 && (
                 <div className="bg-white rounded-lg shadow p-6">
                   <h2 className="text-xl font-semibold mb-4">3단계: 데이터 추출</h2>
+                  {!user && (
+                    <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                      <h3 className="text-blue-800 font-medium mb-2">🔓 단일 이미지 모드는 로그인 없이 사용 가능합니다!</h3>
+                      <p className="text-blue-700 text-sm">
+                        • 바로 데이터 추출이 가능합니다<br/>
+                        • 로그인하시면 데이터가 저장되어 나중에 다시 확인할 수 있습니다<br/>
+                        • 다중 이미지 처리를 원하시면 로그인이 필요합니다
+                      </p>
+                    </div>
+                  )}
+                  {user && (
+                    <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                      <p className="text-green-800">
+                        ✅ 로그인된 상태입니다. 추출된 데이터가 자동으로 저장됩니다.
+                      </p>
+                    </div>
+                  )}
                   <div className="flex gap-4">
                     <button
                       onClick={handleProcess}
@@ -293,10 +392,40 @@ export default function Home() {
                   <p className="text-gray-600 mb-4">
                     각 이미지별로 마스킹 영역을 선택하세요. 모든 이미지의 마스킹이 완료되면 일괄 처리를 시작할 수 있습니다.
                   </p>
-                  <MultiImageManager
-                    uploadedFiles={uploadedFiles}
-                    onMaskingComplete={handleBatchProcess}
-                  />
+                  {!user ? (
+                    <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                      <h3 className="text-red-800 font-medium mb-2">🔒 다중 이미지 모드는 로그인이 필요합니다</h3>
+                      <p className="text-red-700 text-sm mb-3">
+                        다중 이미지 처리 결과를 안전하게 저장하고 관리하기 위해 회원가입/로그인이 필요합니다.
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setShowAuth(true)}
+                          className="bg-red-600 text-white px-4 py-2 rounded text-sm hover:bg-red-700"
+                        >
+                          로그인하기
+                        </button>
+                        <button
+                          onClick={() => switchMode('single')}
+                          className="bg-gray-500 text-white px-4 py-2 rounded text-sm hover:bg-gray-600"
+                        >
+                          단일 이미지 모드로 이동
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                      <p className="text-green-800">
+                        ✅ 로그인된 상태입니다. 일괄 처리 결과가 자동으로 저장됩니다.
+                      </p>
+                    </div>
+                  )}
+                  {user && (
+                    <MultiImageManager
+                      uploadedFiles={uploadedFiles}
+                      onMaskingComplete={handleBatchProcess}
+                    />
+                  )}
                 </div>
               )}
 
