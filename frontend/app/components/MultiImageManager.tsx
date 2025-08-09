@@ -236,7 +236,7 @@ export default function MultiImageManager({ uploadedFiles, onMaskingComplete }: 
                   {/* 썸네일 이미지 */}
                   <div className="relative">
                     <img
-                      src={`http://localhost:8000/uploads/${file.filename}`}
+                      src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/uploads/${file.filename}`}
                       alt={file.original_name}
                       className="w-8 h-8 object-cover rounded border-2 border-gray-200"
                     />

@@ -47,7 +47,7 @@ export default function UserDashboard() {
 
   const fetchUserData = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/user/data')
+      const response = await axios.get(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/user/data`)
       setUserData(response.data)
     } catch (error) {
       console.error('Error fetching user data:', error)

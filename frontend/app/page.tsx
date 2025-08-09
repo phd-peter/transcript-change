@@ -98,7 +98,7 @@ export default function Home() {
         headers['Authorization'] = `Bearer ${Cookies.get('auth_token') || ''}`
       }
 
-      const response = await fetch('http://localhost:8000/process', {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/process`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -131,7 +131,7 @@ export default function Home() {
 
     setIsBatchProcessing(true)
     try {
-      const response = await fetch('http://localhost:8000/process-multiple', {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/process-multiple`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

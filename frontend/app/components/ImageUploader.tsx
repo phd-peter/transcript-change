@@ -44,7 +44,7 @@ export default function ImageUploader({ onFileUploaded, onMultipleFilesUploaded,
           headers['Authorization'] = `Bearer ${token}`
         }
 
-        const response = await fetch('http://localhost:8000/upload-multiple', {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/upload-multiple`, {
           method: 'POST',
           headers,
           body: formData,
@@ -67,7 +67,7 @@ export default function ImageUploader({ onFileUploaded, onMultipleFilesUploaded,
           headers['Authorization'] = `Bearer ${token}`
         }
 
-        const response = await fetch('http://localhost:8000/upload', {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/upload`, {
           method: 'POST',
           headers,
           body: formData,
@@ -85,7 +85,7 @@ export default function ImageUploader({ onFileUploaded, onMultipleFilesUploaded,
           infoHeaders['Authorization'] = `Bearer ${token}`
         }
         
-        const infoResponse = await fetch(`http://localhost:8000/files/${result.filename}`, {
+        const infoResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/files/${result.filename}`, {
           headers: infoHeaders
         })
         const info = await infoResponse.json()

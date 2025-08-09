@@ -69,7 +69,7 @@ export default function MaskingCanvas({
       setIsImageLoaded(false)
     }
 
-    img.src = `http://localhost:8000/uploads/${filename}`
+    img.src = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/uploads/${filename}`
 
     // cleanup
     return () => {

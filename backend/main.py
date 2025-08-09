@@ -62,9 +62,9 @@ if SUPABASE_SERVICE_KEY:
 else:
     admin_supabase = supabase  # fallback
 
-# 업로드된 파일 저장 디렉토리
-UPLOAD_DIR = "uploads"
-PROCESSED_DIR = "processed"
+# 업로드된 파일 저장 디렉토리 (환경변수로 경로 오버라이드 가능)
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
+PROCESSED_DIR = os.getenv("PROCESSED_DIR", "processed")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
