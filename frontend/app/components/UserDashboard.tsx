@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
+import Cookies from 'js-cookie'
 import { format } from 'date-fns'
 import axios from 'axios'
 
@@ -47,7 +48,10 @@ export default function UserDashboard() {
 
   const fetchUserData = async () => {
     try {
-      const response = await axios.get(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/user/data`)
+      const token = Cookies.get('auth_token')
+      const response = await axios.get(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/user/data`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      })
       setUserData(response.data)
     } catch (error) {
       console.error('Error fetching user data:', error)

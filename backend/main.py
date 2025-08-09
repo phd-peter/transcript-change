@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +8,7 @@ from typing import List, Tuple, Dict, Any, Optional
 import cv2
 import numpy as np
 import os
+import pathlib
 import tempfile
 import json
 import re
@@ -123,6 +124,30 @@ class UserDataResponse(BaseModel):
     sessions: List[Dict[str, Any]]
 
 # 유틸리티 함수
+def safe_join(base_dir: str, *paths: str) -> str:
+    """기본 디렉토리 아래로만 결합되도록 보장 (경로 역참조 차단)"""
+    base_path = pathlib.Path(base_dir).resolve()
+    target_path = base_path
+    for p in paths:
+        # 빈 문자열 또는 루트 시작 방지
+        if not p:
+            continue
+        target_path = (target_path / p).resolve()
+        if not str(target_path).startswith(str(base_path)):
+            raise HTTPException(status_code=400, detail="잘못된 경로입니다.")
+    return str(target_path)
+
+def ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+def get_user_subdir(base_dir: str, user_id: str | None) -> tuple[str, str]:
+    """사용자별 서브디렉토리를 반환. (절대경로, 상대경로)
+    로그인하지 않은 경우 'public' 사용
+    """
+    rel = user_id if user_id else "public"
+    abs_dir = safe_join(base_dir, rel)
+    ensure_dir(abs_dir)
+    return abs_dir, rel
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)
@@ -135,6 +160,40 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
+
+def confirm_user_email_if_needed_by_email(email: str) -> bool:
+    """관리자 권한으로 해당 이메일의 사용자가 미인증이면 email_confirm 처리.
+    반환값: True(확인 시도함/완료) 또는 False(대상 사용자 찾지 못함/실패)
+    """
+    try:
+        # 페이지네이션 순회 (최대 5페이지 * 200 = 1000명 범위)
+        page = 1
+        per_page = 200
+        target_user = None
+        while page <= 5:
+            users_resp = admin_supabase.auth.admin.list_users(page=page, per_page=per_page)
+            if not getattr(users_resp, 'users', None):
+                break
+            for u in users_resp.users:
+                if getattr(u, 'email', None) == email:
+                    target_user = u
+                    break
+            if target_user:
+                break
+            page += 1
+
+        if not target_user:
+            return False
+
+        user_id = getattr(target_user, 'id', None)
+        if not user_id:
+            return False
+
+        # 이메일 확인 처리
+        admin_supabase.auth.admin.update_user_by_id(user_id, {"email_confirm": True})
+        return True
+    except Exception:
+        return False
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     credentials_exception = HTTPException(
@@ -262,6 +321,18 @@ def apply_masking(image_path: str, mask_regions: List[MaskRegion], output_path: 
 @app.get("/")
 async def root():
     return {"message": "Transcript Change API v2.0", "features": ["authentication", "supabase_storage"]}
+
+@app.get("/health")
+async def health() -> dict:
+    """Lightweight health check endpoint used by the platform load balancer."""
+    return {"status": "ok"}
+
+@app.get("/favicon.ico")
+async def favicon() -> Response:
+    """Avoid noisy 404 logs from browsers requesting favicon.
+    Returns 204 No Content intentionally.
+    """
+    return Response(status_code=204)
 
 @app.post("/auth/register", response_model=Token)
 async def register(user: UserRegister):
@@ -393,6 +464,50 @@ async def login(user: UserLogin):
         )
         
     except Exception as e:
+        # 이메일 미확인으로 인한 실패 가능성 → 관리자 권한으로 확인 처리 후 재시도
+        try:
+            if confirm_user_email_if_needed_by_email(user.email):
+                retry = supabase.auth.sign_in_with_password({
+                    "email": user.email,
+                    "password": user.password
+                })
+                if retry.user is None:
+                    raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다.")
+
+                user_id = retry.user.id
+                profile_response = supabase.table("user_profiles").select("*").eq("id", user_id).execute()
+                if not profile_response.data:
+                    try:
+                        fallback_profile = {
+                            "id": user_id,
+                            "email": user.email,
+                            "display_name": user.email.split("@")[0],
+                        }
+                        admin_supabase.table("user_profiles").insert(fallback_profile).execute()
+                        profile_response = supabase.table("user_profiles").select("*").eq("id", user_id).execute()
+                    except Exception as create_profile_err:
+                        raise HTTPException(status_code=404, detail=f"사용자 프로필을 찾을 수 없습니다: {create_profile_err}")
+
+                profile = profile_response.data[0]
+                access_token = create_access_token(data={"sub": user_id})
+                created_at_str = profile["created_at"]
+                if hasattr(created_at_str, 'isoformat'):
+                    created_at_str = created_at_str.isoformat()
+                elif not isinstance(created_at_str, str):
+                    created_at_str = str(created_at_str)
+
+                return Token(
+                    access_token=access_token,
+                    token_type="bearer",
+                    user=UserResponse(
+                        id=user_id,
+                        email=profile["email"],
+                        display_name=profile["display_name"],
+                        created_at=created_at_str
+                    )
+                )
+        except Exception:
+            pass
         raise HTTPException(status_code=401, detail=f"로그인 중 오류가 발생했습니다: {str(e)}")
 
 @app.get("/auth/me", response_model=UserResponse)
@@ -437,20 +552,25 @@ async def upload_image(file: UploadFile = File(...), current_user: Optional[dict
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
     
+    # 저장 대상 디렉토리 (사용자별)
+    user_id = current_user["id"] if current_user else None
+    target_dir_abs, target_dir_rel = get_user_subdir(UPLOAD_DIR, user_id)
+
     # 고유 파일명 생성
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{file.filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    rel_path = os.path.join(target_dir_rel, filename)
+    file_path = safe_join(UPLOAD_DIR, rel_path)
     
     # 파일 저장
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
     return {
-        "filename": filename,
+        "filename": rel_path,
         "message": "파일 업로드 완료",
         "file_path": file_path,
-        "user_id": current_user["id"] if current_user else None
+        "user_id": user_id
     }
 
 @app.post("/upload-multiple")
@@ -458,6 +578,9 @@ async def upload_multiple_images(files: List[UploadFile] = File(...), current_us
     """다중 이미지 파일 업로드 (인증 선택사항)"""
     uploaded_files = []
     
+    user_id = current_user["id"] if current_user else None
+    target_dir_abs, target_dir_rel = get_user_subdir(UPLOAD_DIR, user_id)
+
     for file in files:
         if not file.content_type.startswith('image/'):
             continue  # 이미지가 아닌 파일은 건너뛰기
@@ -465,7 +588,8 @@ async def upload_multiple_images(files: List[UploadFile] = File(...), current_us
         # 고유 파일명 생성
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 마이크로초까지 포함
         filename = f"{timestamp}_{file.filename}"
-        file_path = os.path.join(UPLOAD_DIR, filename)
+        rel_path = os.path.join(target_dir_rel, filename)
+        file_path = safe_join(UPLOAD_DIR, rel_path)
         
         # 파일 저장
         with open(file_path, "wb") as buffer:
@@ -476,7 +600,7 @@ async def upload_multiple_images(files: List[UploadFile] = File(...), current_us
         height, width = img.shape[:2]
         
         uploaded_files.append({
-            "filename": filename,
+            "filename": rel_path,
             "original_name": file.filename,
             "width": width,
             "height": height,
@@ -498,7 +622,7 @@ async def process_image(request: ProcessImageRequest, current_user: Optional[dic
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY가 설정되지 않았습니다.")
     
     # 원본 이미지 경로
-    original_path = os.path.join(UPLOAD_DIR, request.filename)
+    original_path = safe_join(UPLOAD_DIR, request.filename)
     if not os.path.exists(original_path):
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
     
@@ -515,9 +639,14 @@ async def process_image(request: ProcessImageRequest, current_user: Optional[dic
             }
             admin_supabase.table("user_sessions").insert(session_data).execute()
         
-        # 마스킹된 이미지 경로
-        masked_filename = f"masked_{request.filename}"
-        masked_path = os.path.join(PROCESSED_DIR, masked_filename)
+        # 마스킹된 이미지 경로 (원본의 사용자 서브경로 보존)
+        orig_rel_dir = os.path.dirname(request.filename)
+        basename = os.path.basename(request.filename)
+        user_rel = orig_rel_dir or "public"
+        processed_dir_abs, _ = get_user_subdir(PROCESSED_DIR, user_rel if user_rel != "public" else None)
+        masked_filename_only = f"masked_{basename}"
+        masked_relpath = os.path.join(user_rel, masked_filename_only)
+        masked_path = safe_join(PROCESSED_DIR, masked_relpath)
         
         # 마스킹 적용
         apply_masking(original_path, request.mask_regions, masked_path)
@@ -582,7 +711,7 @@ async def process_image(request: ProcessImageRequest, current_user: Optional[dic
         return {
             "success": True,
             "filename": request.filename,
-            "masked_filename": masked_filename,
+            "masked_filename": masked_relpath,
             "raw_data": extracted_data,
             "csv_data": csv_data,
             "headers": headers,
@@ -619,13 +748,18 @@ def process_single_image_for_batch(api_key: str, image_data: ImageMaskData, user
     """배치 처리를 위한 단일 이미지 처리 함수"""
     try:
         # 원본 이미지 경로
-        original_path = os.path.join(UPLOAD_DIR, image_data.filename)
+        original_path = safe_join(UPLOAD_DIR, image_data.filename)
         if not os.path.exists(original_path):
             raise ValueError(f"파일을 찾을 수 없습니다: {image_data.filename}")
         
-        # 마스킹된 이미지 경로
-        masked_filename = f"masked_{image_data.filename}"
-        masked_path = os.path.join(PROCESSED_DIR, masked_filename)
+        # 마스킹된 이미지 경로 (원본의 사용자 서브경로 보존)
+        orig_rel_dir = os.path.dirname(image_data.filename)
+        basename = os.path.basename(image_data.filename)
+        user_rel = orig_rel_dir or "public"
+        processed_dir_abs, _ = get_user_subdir(PROCESSED_DIR, user_rel if user_rel != "public" else None)
+        masked_filename_only = f"masked_{basename}"
+        masked_relpath = os.path.join(user_rel, masked_filename_only)
+        masked_path = safe_join(PROCESSED_DIR, masked_relpath)
         
         # 마스킹 적용
         apply_masking(original_path, image_data.mask_regions, masked_path)
@@ -641,7 +775,7 @@ def process_single_image_for_batch(api_key: str, image_data: ImageMaskData, user
         return {
             "success": True,
             "filename": image_data.filename,
-            "masked_filename": masked_filename,
+            "masked_filename": masked_relpath,
             "extracted_data": extracted_data,
             "mask_regions_count": len(image_data.mask_regions),
             "width": width,
@@ -817,10 +951,10 @@ async def process_multiple_images(request: ProcessMultipleImagesRequest, current
         
         raise HTTPException(status_code=500, detail=f"일괄 처리 중 오류 발생: {str(e)}")
 
-@app.get("/files/{filename}")
+@app.get("/files/{filename:path}")
 async def get_file_info(filename: str):
     """업로드된 파일 정보 조회"""
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    file_path = safe_join(UPLOAD_DIR, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
     
